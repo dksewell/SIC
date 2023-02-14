@@ -4,6 +4,30 @@
 #' the SIC model.  This will return output for the incidence and 
 #' the clearance models separately.
 #' 
+#' @param formula Formula of the form <y> ~ <x1> + <x2> + ... + (<time variable> | <subject ID>)
+#' @param data Data frame or tibble
+#' @param min_count_to_estimate positive integer giving the minimum cell count in a 2x2 
+#' contingency table required to regress one pathogen on another
+#' @CI_level numeric between 0 and 1 for the confidence interval level.
+#' @returns  Object of class 'sic_freq' which has the following elements:
+#' * results tibble with columns telling the response variable, the model (incidence or 
+#' clearance), the covariate, the regression coefficient estimate, the lower and upper CI 
+#' bounds, and (begrudgingly) the p-value.
+#' *  logLik the log likelihood of the fitted model.  Note that this only includes the 
+#' model fits for those response variables and corresponding covariates that met the 
+#' min_count_to_estimate criterion.
+#' * estimability list with the valid response variables and the valid covariates 
+#' for each response variable
+#' * CI_level
+#' * min_count_to_estimate
+#' 
+#' @examples 
+#' sic_data = sic_simulator(seed = 2023)
+#' test = sic_frequentist(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
+#'                        sic_data$data[[1]] %>% select(-tau))
+#' 
+#' @export
+#' 
 
 if(FALSE){
   library(magrittr)
@@ -11,18 +35,25 @@ if(FALSE){
   source("~/SIC/R/sic_simulator.R")
   sic_data = 
     sic_simulator(seed = 2023)
-  data = 
-    sic_data$data[[1]] %>% 
-    select(-tau)
+  # data = 
+  #   sic_data$data[[1]] %>% 
+  #   select(-tau)
+  # 
+  # formula = cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject)
+  # 
+  # min_count_to_estimate = 5
+  # CI_level = 0.95
   
-  X = model.matrix(formula,data)
-  X = X[,-ncol(X)]
-  
-  formula = cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject)
-  
+  test = sic_frequentist(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
+                         sic_data$data[[1]] %>% 
+                           select(-tau))
+                         
 }
 
-sic_frequentist = function(formula,data){
+sic_frequentist = function(formula,
+                           data, 
+                           min_count_to_estimate = 5,
+                           CI_level = 0.95){
   
   # Drop NAs
   data %<>% 
@@ -128,10 +159,12 @@ sic_frequentist = function(formula,data){
       tables$clearance[[pathogen_vars[p]]] = 
       list()
     
-    if(length(unique(data[[pathogen_vars[p]]][ incidence_index[[p]] ] )) > 1){
+    if( (length(unique(data[[pathogen_vars[p]]][ incidence_index[[p]] ] )) > 1) &
+        (min(table(data[[pathogen_vars[p]]][ incidence_index[[p]]])) > min_count_to_estimate ) ){
       valid_responses$incidence = 
         c(valid_responses$incidence,p)
       
+      no_valid_covars = TRUE
       for(p2 in c(1:P)[-p]){
         tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]] = 
           table(data[[pathogen_vars[p]]][ incidence_index[[p]] ] ,
@@ -140,13 +173,15 @@ sic_frequentist = function(formula,data){
         names(dimnames(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]] )) = 
           pathogen_vars[c(p,p2)]
         
-        if(ncol(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]]) > 1){
-          if(p2 > min(c(1:P)[-p])){
+        if( (ncol(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]]) > 1) & 
+            (min(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]]) >= min_count_to_estimate) ){
+          if(no_valid_covars){
+            valid_covariates$incidence[[ p ]] = p2
+            no_valid_covars = FALSE
+          }else{
             valid_covariates$incidence[[ p ]] =
               c(valid_covariates$incidence[[ p ]],
                 p2)
-          }else{
-            valid_covariates$incidence[[ p ]] = p2
           }
         }
         
@@ -154,10 +189,12 @@ sic_frequentist = function(formula,data){
         
     }
     
-    if(length(unique(data[[pathogen_vars[p]]][ clearance_index[[p]] ] )) > 1){
+    if( (length(unique(data[[pathogen_vars[p]]][ clearance_index[[p]] ] )) > 1) &
+        (min(table(data[[pathogen_vars[p]]][ clearance_index[[p]]])) > min_count_to_estimate ) ){
       valid_responses$clearance = 
         c(valid_responses$clearance,p)
       
+      no_valid_covars = TRUE
       for(p2 in c(1:P)[-p]){
         tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]] = 
           table(data[[pathogen_vars[p]]][ clearance_index[[p]] ] ,
@@ -166,13 +203,15 @@ sic_frequentist = function(formula,data){
         names(dimnames(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]] )) = 
           pathogen_vars[c(p,p2)]
         
-        if(ncol(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]]) > 1){
-          if(p2 > min(c(1:P)[-p])){
+        if( (ncol(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]]) > 1) & 
+            (min(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]]) >= min_count_to_estimate) ){
+          if(no_valid_covars){
+            valid_covariates$clearance[[ p ]] = p2
+            no_valid_covars = FALSE
+          }else{
             valid_covariates$clearance[[ p ]] =
               c(valid_covariates$clearance[[ p ]],
                 p2)
-          }else{
-            valid_covariates$clearance[[ p ]] = p2
           }
         }
         
@@ -182,7 +221,6 @@ sic_frequentist = function(formula,data){
     
   }
   
-  stop("I stopped here.  Need to move forward taking into account which variables can be modeled with which other covariates")
   
   # Reverse code clearance pathogen variables
   for(p in 1:P){
@@ -197,13 +235,13 @@ sic_frequentist = function(formula,data){
     fits$clearance = list()
   ## Fit incidence models
   for(p in valid_responses$incidence){
-    try({
+    # try({
       formula_p = 
         as.formula(paste0(
           pathogen_vars[p],
           " ~ ",
           paste(c(X_vars,
-                  paste(pathogen_vars[valid_covariates$incidence[[ ]]],
+                  paste(pathogen_vars[valid_covariates$incidence[[p]]],
                         "_lagged",
                         sep = "")),
                 collapse = " + ")
@@ -212,17 +250,19 @@ sic_frequentist = function(formula,data){
         glm(formula_p,
             data = data[incidence_index[[p]],],
             family = binomial("cloglog"))
-    },silent = TRUE)
+    # },silent = TRUE)
   }
   ## Fit clearance models
-  for(p in 1:P){
+  for(p in valid_responses$clearance){
     try({
       formula_p = 
         as.formula(paste0(
           pathogen_vars[p],
           " ~ ",
           paste(c(X_vars,
-                  paste(pathogen_vars,"_lagged",sep = "")),
+                  paste(pathogen_vars[valid_covariates$clearance[[p]]],
+                        "_lagged",
+                        sep = "")),
                 collapse = " + ")
         ))
       fits$clearance[[p]] =
@@ -234,16 +274,140 @@ sic_frequentist = function(formula,data){
   
   
   # Collect results
-  ## \beta_I
-  beta_I = sapply(fits$incidence,coef)
+  helper_fun = function(x){
+    temp = summary(x)$coef
+    cbind(Estimate = temp[,"Estimate"],p = temp[,"Pr(>|z|)"])
+  }
+  estimates_pvals = 
+    list(incidence = lapply(fits$incidence[which(!sapply(fits$incidence,is.null))],helper_fun),
+         clearance = lapply(fits$clearance[which(!sapply(fits$clearance,is.null))],helper_fun)
+    )
   
+  CIs = 
+    list(incidence = lapply(fits$incidence[which(!sapply(fits$incidence,is.null))],confint,level = CI_level),
+         clearance = lapply(fits$clearance[which(!sapply(fits$clearance,is.null))],confint,level = CI_level)
+         )
+  
+  names(estimates_pvals$incidence) = 
+    names(CIs$incidence) = 
+    pathogen_vars[valid_responses$incidence]
+  names(estimates_pvals$clearance) = 
+    names(CIs$clearance) = 
+    pathogen_vars[valid_responses$clearance]
+  
+  
+  results = 
+    tibble(Response = character(),
+           Model = character(),
+           Covariate = character(),
+           Estimate = numeric(),
+           Lower = numeric(),
+           Upper = numeric(),
+           `p-value` = numeric())
+  
+  for(i in 1:P){
+    if(i %in% valid_responses$incidence){
+      results %<>%
+        bind_rows(
+          tibble(Response = pathogen_vars[i],
+                 Model = "Incidence",
+                 Covariate = rownames(CIs$incidence[[pathogen_vars[i]]]),
+                 Estimate = estimates_pvals$incidence[[pathogen_vars[i]]][,1],
+                 Lower = CIs$incidence[[pathogen_vars[i]]][,1],
+                 Upper = CIs$incidence[[pathogen_vars[i]]][,2],
+                 `p-value` = estimates_pvals$incidence[[pathogen_vars[i]]][,2])
+        )
+    }else{
+      results %<>%
+        bind_rows(
+          tibble(Response = pathogen_vars[i],
+                 Model = "Incidence",
+                 Covariate = NA,
+                 Estimate = NA,
+                 Lower = NA,
+                 Upper = NA,
+                 `p-value` = NA)
+        )
+    }
+    
+    if(i %in% valid_responses$clearance){
+      results %<>%
+        bind_rows(
+          tibble(Response = pathogen_vars[i],
+                 Model = "Clearance",
+                 Covariate = rownames(CIs$clearance[[pathogen_vars[i]]]),
+                 Estimate = estimates_pvals$clearance[[pathogen_vars[i]]][,1],
+                 Lower = CIs$clearance[[pathogen_vars[i]]][,1],
+                 Upper = CIs$clearance[[pathogen_vars[i]]][,2],
+                 `p-value` = estimates_pvals$clearance[[pathogen_vars[i]]][,2])
+        )
+    }else{
+      results %<>%
+        bind_rows(
+          tibble(Response = pathogen_vars[i],
+                 Model = "Clearance",
+                 Covariate = NA,
+                 Estimate = NA,
+                 Lower = NA,
+                 Upper = NA,
+                 `p-value` = NA)
+        )
+    }
+  }
+  
+  # Create pathogen-pathogen network
+  incidence_network = 
+    clearance_network = 
+    matrix(NA, P, P,
+           dimnames = list(source = pathogen_vars,
+                           target = pathogen_vars))
+  
+  temp1 = 
+    results %>% 
+    filter(Model == "Incidence") %>% 
+    select("Response","Covariate","Estimate") %>% 
+    mutate(Covariate = gsub("_lagged","",Covariate)) %>% 
+    filter(Covariate %in% pathogen_vars)
+  incidence_network[cbind(temp1$Covariate,
+                          temp1$Response)] = temp1$Estimate
+  temp1 = 
+    results %>% 
+    filter(Model == "Clearance") %>% 
+    select("Response","Covariate","Estimate") %>% 
+    mutate(Covariate = gsub("_lagged","",Covariate)) %>% 
+    filter(Covariate %in% pathogen_vars)
+  clearance_network[cbind(temp1$Covariate,
+                          temp1$Response)] = temp1$Estimate
   
   # Store log likelihood
   ll = 
-    sum(c(sapply(fits$incidence,logLik),
-          sapply(fits$clearance,logLik))
+    sum(c(sapply(fits$incidence[which(!sapply(fits$incidence,is.null))],logLik),
+          sapply(fits$clearance[which(!sapply(fits$clearance,is.null))],logLik))
     )
   
+  
+  valid_responses$incidence = 
+    pathogen_vars[valid_responses$incidence]
+  valid_responses$clearance = 
+    pathogen_vars[valid_responses$clearance]
+  for(i in 1:P){
+    if(!is.null(valid_covariates$incidence[[i]])) valid_covariates$incidence[[i]] = pathogen_vars[valid_covariates$incidence[[i]]]
+    if(!is.null(valid_covariates$clearance[[i]])) valid_covariates$clearance[[i]] = pathogen_vars[valid_covariates$clearance[[i]]]
+  }
+  names(valid_covariates$incidence) = pathogen_vars
+  names(valid_covariates$clearance) = pathogen_vars
+  
+  object = 
+    list(results = results,
+         logLik = ll,
+         estimability = list(response = valid_responses,
+                             covariates = valid_covariates),
+         CI_level = CI_level,
+         min_count_to_estimate = min_count_to_estimate)
+  
+  class(object) = "sic_freq"
+  
+  return(object)
 }
 
 
