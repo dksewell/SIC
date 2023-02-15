@@ -16,7 +16,7 @@
 sic_simulator = function(nsim = 1,
                          seed = NULL,
                          P = 10,
-                         N_subj = 100,
+                         N_subj = 250,
                          N_time = 5,
                          bl_prevalences = rexp(P,1/0.05),
                          bl_clearance_rates = runif(P,3,10)){
