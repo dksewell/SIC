@@ -59,15 +59,16 @@ if(FALSE){
   formula = cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject)
   data = sic_data$data[[1]] %>% select(-tau)
   seed = 2023
-  prior = normal(location = 0,
-                 scale = 2.5,
-                 autoscale = TRUE)
-  prior_intercept = normal(location = 0, scale = 2.5)
   min_count_to_estimate = 5
   CI_level = 0.95
-  verbose = TRUE
   lrank = 2
-  n_lf_steps = 50
+  beta_prior_mean = 0.0
+  beta_prior_sd = 2.5
+  UV_prior_mean = 0.0
+  UV_prior_mean = sqrt(2.5) / lrank^(1/4)
+  verbose = TRUE
+
+  stanmodels = list(sic_lowrank = stan_model("~/SIC/inst/stan/sic_lowrank.stan"))
 }
 
 sic_lowrank = function(formula,
@@ -76,16 +77,12 @@ sic_lowrank = function(formula,
                        min_count_to_estimate = 5,
                        CI_level = 0.95,
                        lrank = 2,
-                       n_lf_steps = 50,
-                       # tuningMethod = c("auto","none"),
-                       autoTune_n = 250,
-                       autoTune_bounds = 0.65 + c(-1,1)*0.1,
-                       max_autoTune_count = 100,
-                       prior = normal(location = 0,
-                                      scale = 2.5,
-                                      autoscale = TRUE),
-                       prior_intercept = normal(location = 0, scale = 2.5),
-                       verbose = TRUE){
+                       beta_prior_mean = 0.0,
+                       beta_prior_sd = 2.5,
+                       UV_prior_mean = 0.0,
+                       UV_prior_mean = sqrt(2.5) / lrank^(1/4),
+                       verbose = TRUE,
+                       ...){ #... for additional stan() arguments, such as cores, chains, etc.
 
   if(!is.null(seed)){
     set.seed(seed)
@@ -185,47 +182,13 @@ sic_lowrank = function(formula,
 
   # Compute tables to see if we can make inference
   valid_responses = list()
-  valid_covariates = list()
-  valid_covariates$incidence =
-    valid_covariates$clearance = list()
-
-  tables = list()
-  tables$incidence =
-    tables$clearance = list()
 
   for(p in 1:P){
-    tables$incidence[[pathogen_vars[p]]] =
-      tables$clearance[[pathogen_vars[p]]] =
-      list()
 
     if( (length(unique(data[[pathogen_vars[p]]][ incidence_index[[p]] ] )) > 1) &
         (min(table(data[[pathogen_vars[p]]][ incidence_index[[p]]])) > min_count_to_estimate ) ){
       valid_responses$incidence =
         c(valid_responses$incidence,p)
-
-      no_valid_covars = TRUE
-      for(p2 in c(1:P)[-p]){
-        tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]] =
-          table(data[[pathogen_vars[p]]][ incidence_index[[p]] ] ,
-                data[[paste0(pathogen_vars[p2],"_lagged")]][ incidence_index[[p]] ] )
-
-        names(dimnames(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]] )) =
-          pathogen_vars[c(p,p2)]
-
-        if( (ncol(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]]) > 1) &
-            (min(tables$incidence[[pathogen_vars[p]]][[pathogen_vars[p2]]]) >= min_count_to_estimate) ){
-          if(no_valid_covars){
-            valid_covariates$incidence[[ p ]] = p2
-            no_valid_covars = FALSE
-          }else{
-            valid_covariates$incidence[[ p ]] =
-              c(valid_covariates$incidence[[ p ]],
-                p2)
-          }
-        }
-
-      }
-
     }
 
     if( (length(unique(data[[pathogen_vars[p]]][ clearance_index[[p]] ] )) > 1) &
@@ -233,32 +196,11 @@ sic_lowrank = function(formula,
       valid_responses$clearance =
         c(valid_responses$clearance,p)
 
-      no_valid_covars = TRUE
-      for(p2 in c(1:P)[-p]){
-        tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]] =
-          table(data[[pathogen_vars[p]]][ clearance_index[[p]] ] ,
-                data[[paste0(pathogen_vars[p2],"_lagged")]][ clearance_index[[p]] ] )
-
-        names(dimnames(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]] )) =
-          pathogen_vars[c(p,p2)]
-
-        if( (ncol(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]]) > 1) &
-            (min(tables$clearance[[pathogen_vars[p]]][[pathogen_vars[p2]]]) >= min_count_to_estimate) ){
-          if(no_valid_covars){
-            valid_covariates$clearance[[ p ]] = p2
-            no_valid_covars = FALSE
-          }else{
-            valid_covariates$clearance[[ p ]] =
-              c(valid_covariates$clearance[[ p ]],
-                p2)
-          }
-        }
-
-      }
-
     }
 
   }
+
+
 
   # Reverse code clearance pathogen variables
   for(p in 1:P){
@@ -267,49 +209,11 @@ sic_lowrank = function(formula,
   }
 
 
-  if(verbose) cat("\nUsing HMC to fit SIC model\n")
-
-  # HMC single iteration function
-  HMC = function (U, grad_U, epsilon, L, current_q){
-    q = current_q
-    p = rnorm(length(q),0,1) # independent standard normal variates
-    current_p = p
-    # Make a half step for momentum at the beginning
-    p=p- epsilon * grad_U(q) / 2
-    # Alternate full steps for position and momentum
-    for (i in 1:L)
-    {
-      # Make a full step for the position
-      q=q+ epsilon * p
-      # Make a full step for the momentum, except at end of trajectory
-      if (i!=L)p=p- epsilon * grad_U(q)
-    }
-    # Make a half step for momentum at the end.
-    p=p- epsilon * grad_U(q) / 2
-    # Negate momentum at end of trajectory to make the proposal symmetric
-    p = -p
-    # Evaluate potential and kinetic energies at start and end of trajectory
-    current_U = U(current_q)
-    current_K = sum(current_p^2) / 2
-    proposed_U = U(q)
-    proposed_K = sum(p^2) / 2
-    # Accept or reject the state at end of trajectory, returning either
-    # the position at the end of the trajectory or the initial position
-    if (runif(1) < exp(current_U-proposed_U+current_K-proposed_K))
-    {
-      return (q) # accept
-    }
-    else
-    {
-      return (current_q) # reject
-    }
-  }
+  # if(verbose) cat("\nUsing HMC (via STAN) to fit SIC model\n")
 
 
-  if(verbose) cat("\--- Fitting incidence component\n")
 
-
-  if(verbose) cat("\------ Initializing incidence component\n")
+  if(verbose) cat("\n------ Initializing incidence component\n")
 
   init_fits = list()
   for(p in valid_responses$incidence){
