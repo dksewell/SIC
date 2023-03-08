@@ -29,7 +29,7 @@
 #' @examples 
 #' sic_data = sic_simulator(seed = 2023)
 #' test = sic(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
-#'                  sic_data$data[[1]] %>% dplyr::select(-tau))
+#'                  sic_data$data[[1]] %>% select(-tau))
 #' 
 #' @export
 #' 
@@ -39,30 +39,56 @@ if(FALSE){
   library(magrittr)
   library(rstanarm)
   library(dplyr)
+  library(plot.matrix)
+  library(viridis)
+  import::from(ggplot2,ggtitle)
   source("~/SIC/R/sic_simulator.R")
+  source("~/SIC/R/sic_frequentist.R")
+  source("~/SIC/R/sic.R")
+  source("~/SIC/R/plot.sic.R")
+  
   sic_data = 
     sic_simulator(seed = 2023)
   
-  test = sic(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
-             sic_data$data[[1]] %>% dplyr::select(-tau),
-             prior = student_t(df = 5, scale = 2.5),
-             verbose = TRUE,
-             seed = 2023)
+  # test = sic_lowrank(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
+  #                    sic_data$data[[1]] %>% select(-tau),
+  #                    verbose = TRUE,
+  #                    seed = 2023)
   
   formula = cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject)
-  data = sic_data$data[[1]] %>% dplyr::select(-tau)
+  data = sic_data$data[[1]] %>% select(-tau)
+  seed = 2023
+  prior = normal(location = 0,
+                 scale = 2.5,
+                 autoscale = TRUE)
+  prior_intercept = normal(location = 0, scale = 2.5)
   min_count_to_estimate = 5
   CI_level = 0.95
+  verbose = TRUE
+  lrank = 2
+  n_lf_steps = 50
+  autoTune_n = 250
+  autoTune_bounds = 0.65 + c(-1,1)*0.1
+  max_autoTune_count = 100
   
 }
 
-sic = function(formula,
-               data, 
-               seed = NULL,
-               min_count_to_estimate = 5,
-               CI_level = 0.95,
-               verbose = TRUE,
-               ...){
+sic_lowrank = function(formula,
+                       data, 
+                       seed = NULL,
+                       min_count_to_estimate = 5,
+                       CI_level = 0.95,
+                       lrank = 2,
+                       n_lf_steps = 50,
+                       # tuningMethod = c("auto","none"),
+                       autoTune_n = 250,
+                       autoTune_bounds = 0.65 + c(-1,1)*0.1,
+                       max_autoTune_count = 100,
+                       prior = normal(location = 0,
+                                      scale = 2.5,
+                                      autoscale = TRUE),
+                       prior_intercept = normal(location = 0, scale = 2.5),
+                       verbose = TRUE){
   
   if(!is.null(seed)){
     set.seed(seed)
@@ -73,7 +99,7 @@ sic = function(formula,
   if(verbose) cat("\nCurating data and determining which responses/covariates are estimable\n")
   # Drop NAs
   data %<>% 
-    dplyr::select(all.vars(formula)) %>% 
+    select(all.vars(formula)) %>% 
     na.omit()
   # tidyr::drop_na(all.vars(formula))
   
@@ -113,7 +139,7 @@ sic = function(formula,
   NT = nrow(data)
   N = 
     data %>% 
-    dplyr::select(all_of(subject_var)) %>% 
+    select(all_of(subject_var)) %>% 
     unlist() %>% 
     unique() %>% 
     length()
@@ -237,7 +263,6 @@ sic = function(formula,
     
   }
   
-  
   # Reverse code clearance pathogen variables
   for(p in 1:P){
     data[[pathogen_vars[p]]][clearance_index[[p]]] = 
@@ -245,7 +270,206 @@ sic = function(formula,
   }
   
   
-  if(verbose) cat("\nUsing rstanarm (HMC) to fit SIC model\n")
+  if(verbose) cat("\nUsing HMC to fit SIC model\n")
+  
+  # HMC single iteration function
+  HMC = function (U, grad_U, epsilon, L, current_q){
+    q = current_q
+    p = rnorm(length(q),0,1) # independent standard normal variates
+    current_p = p
+    # Make a half step for momentum at the beginning
+    p=p- epsilon * grad_U(q) / 2
+    # Alternate full steps for position and momentum
+    for (i in 1:L)
+    {
+      # Make a full step for the position
+      q=q+ epsilon * p
+      # Make a full step for the momentum, except at end of trajectory
+      if (i!=L)p=p- epsilon * grad_U(q)
+    }
+    # Make a half step for momentum at the end.
+    p=p- epsilon * grad_U(q) / 2
+    # Negate momentum at end of trajectory to make the proposal symmetric
+    p = -p
+    # Evaluate potential and kinetic energies at start and end of trajectory
+    current_U = U(current_q)
+    current_K = sum(current_p^2) / 2
+    proposed_U = U(q)
+    proposed_K = sum(p^2) / 2
+    # Accept or reject the state at end of trajectory, returning either
+    # the position at the end of the trajectory or the initial position
+    if (runif(1) < exp(current_U-proposed_U+current_K-proposed_K))
+    {
+      return (q) # accept
+    }
+    else
+    {
+      return (current_q) # reject
+    }
+  }
+  
+  
+  if(verbose) cat("\--- Fitting incidence component\n")
+  
+  
+  if(verbose) cat("\------ Initializing incidence component\n")
+  
+  init_fits = list()
+  for(p in valid_responses$incidence){
+    try({
+      if(is.null(valid_covariates$incidence[[p]])){
+        formula_p = 
+          as.formula(paste0(
+            pathogen_vars[p],
+            " ~ ",
+            paste(X_vars,
+                  collapse = " + ")
+          ))
+      }else{
+        formula_p = 
+          as.formula(paste0(
+            pathogen_vars[p],
+            " ~ ",
+            paste(c(X_vars,
+                    paste(pathogen_vars[valid_covariates$incidence[[p]]],
+                          "_lagged",
+                          sep = "")),
+                  collapse = " + ")
+          ))
+      }
+      
+      init_fits[[p]] =
+        glm(formula_p,
+            data = data[incidence_index[[p]],],
+            family = binomial("cloglog"))
+    },silent = TRUE)
+  }
+  # Use glm regression coefficient
+  beta_I_init = 
+    t(sapply(init_fits,function(x) coef(x)[1:Q]))
+  eta_I_init = matrix(NA,P,P)
+  for(p in valid_responses$incidence){
+    if(!is.null(valid_covariates$incidence[[p]])){
+      eta_I_init[valid_covariates$incidence[[p]],p] =
+        coef(init_fits[[p]])[-c(1:Q)]
+    }
+  }
+  eta_I_init = filling::fill.USVT(eta_I_init)$X
+  eta_I_init_svd = svd(eta_I_init)
+  U_I = eta_I_init_svd$u[,1:lrank] %*% diag(sqrt(eta_I_init_svd$d[1:lrank]))
+  V_I = eta_I_init_svd$v[,1:lrank] %*% diag(sqrt(eta_I_init_svd$d[1:lrank]))
+  
+  init_vector = 
+    c(beta_I_init,
+      U_I,
+      V_I)
+  
+  # Create helpers
+  tau = y = X = list()
+  for(p in valid_responses$incidence){
+      if(is.null(valid_covariates$incidence[[p]])){
+        formula_p = 
+          as.formula(paste0(
+            pathogen_vars[p],
+            " ~ ",
+            paste(X_vars,
+                  collapse = " + ")
+          ))
+      }else{
+        formula_p = 
+          as.formula(paste0(
+            pathogen_vars[p],
+            " ~ ",
+            paste(c(X_vars,
+                    paste(pathogen_vars[valid_covariates$incidence[[p]]],
+                          "_lagged",
+                          sep = "")),
+                  collapse = " + ")
+          ))
+      }
+      X[[p]] = 
+        model.matrix(formula_p,
+                     data = data[incidence_index[[p]],])
+      y[[p]] = 
+        data[incidence_index[[p]],] %>% 
+        dplyr::select(pathogen_vars[p]) %>% 
+        unlist()
+      
+      tau[[p]] = 
+        data[incidence_index[[p]],] %>% 
+        dplyr::select(tau) %>% 
+        unlist()
+      
+  }
+  
+  # Create U (negative log posterior)
+  nlogpost = function(x){
+    beta_I = matrix(x[1:(Q * P)],Q,P)
+    U_I = matrix(x[Q * P + 1:(P * lrank)],P,lrank)
+    V_I = matrix(x[Q * P + P * lrank + 1:(P * lrank)],P,lrank)
+    eta_I = tcrossprod(U_I,V_I)
+    
+    
+    
+    nlp = 0.0
+    for(p in valid_responses$incidence){
+      lambda_p = 
+        exp(
+          X[[p]][,1:Q] %*% beta_I[,p] + 
+            X[[p]][,-c(1:Q)] %*% eta_I[valid_covariates$incidence[[p]],p]
+        )
+      elt =
+        exp(-lambda_p * tau[[p]])
+      
+      nlp = 
+        nlp +
+        y[[p]] * ( 1 - elt ) + (1 - y[[p]]) * elt
+    }
+    
+    return(-nlp)
+  }
+  
+  # Create \nabla U (negative log posterior)
+  nlogpost_grad = function(x){
+    beta_I = matrix(x[1:(Q * P)],Q,P)
+    U_I = matrix(x[Q * P + 1:(P * lrank)],P,lrank)
+    V_I = matrix(x[Q * P + P * lrank + 1:(P * lrank)],P,lrank)
+    eta_I = tcrossprod(U_I,V_I)
+    
+    y_V = 
+    
+    nabla = numeric(Q*P + P * lrank * 2)
+    for(p in valid_responses$incidence){
+      lambda_p = 
+        exp(
+          X[[p]][,1:Q] %*% beta_I[,p] + 
+            X[[p]][,-c(1:Q)] %*% eta_I[valid_covariates$incidence[[p]],p]
+        )
+      elt =
+        exp(-lambda_p * tau[[p]])
+      p_weights = 
+        tau[[p]] * lambda_p * (y[[p]] / (1 - elt) - 1)
+      
+      # beta coefficients
+      nabla[(p-1) * Q + 1:Q] = 
+        crossprod(p_weights,X[[p]][,1:Q])
+      
+      # U coefficients
+      
+      
+    }
+    
+    return(-nlp)
+  }
+  
+  
+  
+  
+  
+  
+  
+  
+  #...copied from sic_freq
   # Get model fits
   fits = list()
   fits$incidence = 
@@ -421,7 +645,7 @@ sic = function(formula,
   temp1 = 
     results %>% 
     filter(Model == "Incidence") %>% 
-    dplyr::select("Response","Covariate","Estimate") %>% 
+    select("Response","Covariate","Estimate") %>% 
     mutate(Covariate = gsub("_lagged","",Covariate)) %>% 
     filter(Covariate %in% pathogen_vars)
   incidence_network[cbind(temp1$Covariate,
@@ -429,7 +653,7 @@ sic = function(formula,
   temp1 = 
     results %>% 
     filter(Model == "Clearance") %>% 
-    dplyr::select("Response","Covariate","Estimate") %>% 
+    select("Response","Covariate","Estimate") %>% 
     mutate(Covariate = gsub("_lagged","",Covariate)) %>% 
     filter(Covariate %in% pathogen_vars)
   clearance_network[cbind(temp1$Covariate,

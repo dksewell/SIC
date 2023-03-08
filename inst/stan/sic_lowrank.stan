@@ -4,7 +4,7 @@ data {
   int<lower=1> Q;
   int<lower=1> P;
   int<lower=1> R;
-  int<lower=0, upper = 1> y_star; // input as c(y_star)
+  int<lower=0, upper = 1> y_star[N*P]; // input as c(y_star)
   matrix[N, P] y_lagged;
   matrix[N, Q] X;
 
@@ -26,14 +26,23 @@ parameters {
 }
 
 transformed parameters {
-
+  
+  matrix[P, P] eta_I;
+  matrix[P, P] eta_C;
   matrix[N, P] Lambda;
   matrix[N, P] y_probs;
-
+  
+  eta_I = U * V_I';
+  eta_C = U * V_C';
+  for (p in 1:P) {
+    eta_I[p,p] = 0.0;
+    eta_C[p,p] = 0.0;
+  }
+  
   Lambda =
   exp(
-    (1.0 - y_lagged) .* ( X * Beta_I + y_lagged * (U * V_I') )  +
-    (y_lagged) .* ( X * Beta_C + y_lagged * (U * V_C') )
+    (1.0 - y_lagged) .* ( X * Beta_I + y_lagged * eta_I )  +
+    (y_lagged) .* ( X * Beta_C + y_lagged * eta_C )
   );
   y_probs =
   1.0 - exp(-Lambda);

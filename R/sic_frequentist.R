@@ -27,7 +27,7 @@
 #' @examples 
 #' sic_data = sic_simulator(seed = 2023)
 #' test = sic_frequentist(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
-#'                        sic_data$data[[1]] %>% select(-tau))
+#'                        sic_data$data[[1]] %>% dplyr::select(-tau))
 #' 
 #' @export
 #' 
@@ -37,10 +37,10 @@ if(FALSE){
   library(dplyr)
   source("~/SIC/R/sic_simulator.R")
   sic_data = 
-    sic_simulator(seed = 2023)
+    sic_simulator(seed = 1)
   # data = 
   #   sic_data$data[[1]] %>% 
-  #   select(-tau)
+  #   dplyr::select(-tau)
   # 
   # formula = cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject)
   # 
@@ -49,7 +49,7 @@ if(FALSE){
   
   test = sic_frequentist(cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 +(time | subject),
                          sic_data$data[[1]] %>% 
-                           select(-tau))
+                           dplyr::select(-tau))
                          
 }
 
@@ -60,7 +60,7 @@ sic_frequentist = function(formula,
   
   # Drop NAs
   data %<>% 
-    select(all.vars(formula)) %>% 
+    dplyr::select(all.vars(formula)) %>% 
     na.omit()
     # tidyr::drop_na(all.vars(formula))
   
@@ -100,7 +100,7 @@ sic_frequentist = function(formula,
   NT = nrow(data)
   N = 
     data %>% 
-    select(all_of(subject_var)) %>% 
+    dplyr::select(all_of(subject_var)) %>% 
     unlist() %>% 
     unique() %>% 
     length()
@@ -268,28 +268,32 @@ sic_frequentist = function(formula,
   }
   ## Fit clearance models
   for(p in valid_responses$clearance){
+    formula_p = NULL
+    
     try({
-      if(is.null(valid_covariates$clearance[[p]])){
-        formula_p = 
-          as.formula(paste0(
-            pathogen_vars[p],
-            " ~ ",
-            paste(X_vars,
-                  collapse = " + ")
-          ))
-      }else{
-        formula_p = 
-          as.formula(paste0(
-            pathogen_vars[p],
-            " ~ ",
-            paste(c(X_vars,
-                    paste(pathogen_vars[valid_covariates$clearance[[p]]],
-                          "_lagged",
-                          sep = "")),
-                  collapse = " + ")
-          ))
-      }
-      
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(c(X_vars,
+                  paste(pathogen_vars[valid_covariates$clearance[[p]]],
+                        "_lagged",
+                        sep = "")),
+                collapse = " + ")
+        ))
+    },silent = TRUE)
+    
+    if(is.null(formula_p)){
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(X_vars,
+                collapse = " + ")
+        ))
+    }
+     
+    try({ 
       fits$clearance[[p]] =
         glm(formula_p,
             data = data[clearance_index[[p]],],
@@ -390,7 +394,7 @@ sic_frequentist = function(formula,
   temp1 = 
     results %>% 
     filter(Model == "Incidence") %>% 
-    select("Response","Covariate","Estimate") %>% 
+    dplyr::select("Response","Covariate","Estimate") %>% 
     mutate(Covariate = gsub("_lagged","",Covariate)) %>% 
     filter(Covariate %in% pathogen_vars)
   incidence_network[cbind(temp1$Covariate,
@@ -398,7 +402,7 @@ sic_frequentist = function(formula,
   temp1 = 
     results %>% 
     filter(Model == "Clearance") %>% 
-    select("Response","Covariate","Estimate") %>% 
+    dplyr::select("Response","Covariate","Estimate") %>% 
     mutate(Covariate = gsub("_lagged","",Covariate)) %>% 
     filter(Covariate %in% pathogen_vars)
   clearance_network[cbind(temp1$Covariate,
@@ -416,11 +420,16 @@ sic_frequentist = function(formula,
   valid_responses$clearance = 
     pathogen_vars[valid_responses$clearance]
   for(i in 1:P){
-    if(!is.null(valid_covariates$incidence[[i]])) valid_covariates$incidence[[i]] = pathogen_vars[valid_covariates$incidence[[i]]]
-    if(!is.null(valid_covariates$clearance[[i]])) valid_covariates$clearance[[i]] = pathogen_vars[valid_covariates$clearance[[i]]]
+    try({ 
+      valid_covariates$incidence[[i]] = pathogen_vars[valid_covariates$incidence[[i]]]
+      names(valid_covariates$incidence)[i] = pathogen_vars[i]
+      }, silent = T)
+    try({
+      valid_covariates$clearance[[i]] = pathogen_vars[valid_covariates$clearance[[i]]]
+      names(valid_covariates$clearance)[i] = pathogen_vars[i]
+      }, silent = T)
   }
-  names(valid_covariates$incidence) = pathogen_vars
-  names(valid_covariates$clearance) = pathogen_vars
+  
   
   object = 
     list(results = results,
