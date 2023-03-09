@@ -238,29 +238,33 @@ sic_frequentist = function(formula,
     fits$clearance = list()
   ## Fit incidence models
   for(p in valid_responses$incidence){
+    formula_p = NULL
+    
     try({
-      if(is.null(valid_covariates$incidence[[p]])){
-        formula_p = 
-          as.formula(paste0(
-            pathogen_vars[p],
-            " ~ ",
-            paste(X_vars,
-                  collapse = " + ")
-          ))
-      }else{
-        formula_p = 
-          as.formula(paste0(
-            pathogen_vars[p],
-            " ~ ",
-            paste(c(X_vars,
-                    paste(pathogen_vars[valid_covariates$incidence[[p]]],
-                          "_lagged",
-                          sep = "")),
-                  collapse = " + ")
-          ))
-      }
-      
-      fits$incidence[[p]] =
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(c(X_vars,
+                  paste(pathogen_vars[valid_covariates$incidence[[p]]],
+                        "_lagged",
+                        sep = "")),
+                collapse = " + ")
+        ))
+    },silent = TRUE)
+    
+    if(is.null(formula_p)){
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(X_vars,
+                collapse = " + ")
+        ))
+    }
+    
+    try({ 
+      fits$incid[[p]] =
         glm(formula_p,
             data = data[incidence_index[[p]],],
             family = binomial("cloglog"))
