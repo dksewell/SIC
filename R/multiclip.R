@@ -69,8 +69,19 @@ if(FALSE){
   prior_eta_I = list(location = 0, scale = sqrt(2.5))
   prior_eta_C = list(location = 0, scale = sqrt(2.5))
   prior_prev = list(location = 0, scale = sqrt(2.5), autoscale = TRUE)
+  prior_sensitivity = list(a = 18.5, b = 3.9)
+  prior_specificity = list(a = 50, b = 1)
   n_draws = 5e4
 
+  
+  temp_fun = function(x){
+    (qbeta(0.025,x[1], x[2]) - 0.65)^2 +
+       (qbeta(0.975,x[1], x[2]) - 0.95)^2
+  }
+  optim(c(200,10),temp_fun)
+  curve(dbeta(x,18.5, 3.9))
+  qbeta(c(0.025,0.975),18.5, 3.9)
+  qbeta(c(0.025,0.975),50, 1)
 }
 
 multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 + (time | subject),
@@ -86,6 +97,8 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                      prior_eta_I = list(location = 0, scale = sqrt(2.5)),
                      prior_eta_C = list(location = 0, scale = sqrt(2.5)),
                      prior_prev = list(location = 0, scale = sqrt(2.5), autoscale = TRUE),
+                     prior_sensitivity = list(a = 18.5, b = 3.9), # Puts 95% prior probability between 0.65 and 0.95
+                     prior_specificity = list(a = 50, b = 1), # Puts 95% prior probability between 0.929 and 0.999
                      verbose = TRUE){
 
   if(!is.null(seed)){
@@ -225,7 +238,8 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
 
   tables = list()
   tables$incidence =
-    tables$clearance = list()
+    tables$clearance =
+    list()
 
   for(p in 1:P){
     tables$incidence[[pathogen_vars[p]]] =
@@ -263,7 +277,7 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     }
 
     if( (length(unique(data_gr0[[pathogen_vars[p]]][ clearance_index[[p]] ] )) > 1) &
-        (min(table(data_gr0[[pathogen_vars[p]]][ clearance_index[[p]]])) > min_count_to_estimate ) ){
+        (min(table(data_gr0[[pathogen_vars[p]]][ clearance_index[[p]]])) >= min_count_to_estimate ) ){
       valid_responses$clearance =
         c(valid_responses$clearance,p)
 
@@ -291,8 +305,17 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
       }
 
     }
-
   }
+  
+  tables$prevalence =
+    data_0 %>% 
+    dplyr::select(all_of(pathogen_vars)) %>% 
+    as.matrix() %>% 
+    colSums()
+  
+  valid_responses$prevalence = 
+    which(tables$prevalence >= min_count_to_estimate)
+  
 
 
   # Get design matrices
@@ -344,132 +367,170 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
 
   # Reverse coding
   z_star = abs(z_itp - z_lagged)
-
-
-
-  #asdf
-  # Reverse code clearance pathogen variables
-  for(p in 1:P){
-    data[[pathogen_vars[p]]][clearance_index[[p]]] =
-      1 - data[[pathogen_vars[p]]][clearance_index[[p]]]
-  }
-
-  # Get X explicitly
-  X_matrix =
-    model.matrix(as.formula(paste0("~ ",
-                                   paste(X_vars,collapse = "+"))),
-                 data = data)
-
-  # Get y_(t-1) explicitly
-  y_lagged =
-    data %>%
-    select(all_of(paste(pathogen_vars,"lagged",sep="_"))) %>%
-    as.matrix()
-
-  # Get y^* (vectorized) and tau
-  y_star =
-    data %>%
-    select(all_of(pathogen_vars)) %>%
-    unlist()
-  # y_star_mat =
-  #   data %>%
-  #   select(all_of(pathogen_vars)) %>%
-  #   as.matrix()
-  tau_rep = rep(data$tau,P)
-
+  
+  
+  # Initialize
   if(verbose) cat("\nInitializing parameters\n")
-
-  init_fit = NULL
-  warn = options()$warn
-  options(warn = -1)
-  try({
-    init_fit =
-      suppressMessages(sic_frequentist(formula,data))
-  },silent = TRUE)
-  if(is.null(init_fit)){
+  fits = list()
+  
+  ## Clearance
+  fits$clearance = list()
+  data_aug_reverse_coded = 
+    data_aug
+  for(p in 1:P){
+    data_aug_reverse_coded[[pathogen_vars[p]]][clearance_index[[p]]] = 
+      1 - data_aug_reverse_coded[[pathogen_vars[p]]][clearance_index[[p]]]
+  }
+  for(p in valid_responses$clearance){
+    formula_p = NULL
+    
     try({
-      init_fit =
-        suppressMessages(sic_frequentist(formula,data, min_count_to_estimate = 10))
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(c(X_vars$clearance,
+                  paste(pathogen_vars[valid_covariates$clearance[[p]]],
+                        "_lagged",
+                        sep = "")),
+                collapse = " + ")
+        ))
+    },silent = TRUE)
+    
+    if(is.null(formula_p)){
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(X_vars$clearance,
+                collapse = " + ")
+        ))
+    }
+    
+    try({ 
+      fits$clearance[[p]] =
+        glm(formula_p,
+            data = 
+              data_aug_reverse_coded[clearance_index[[p]],],
+            family = binomial("cloglog"))
     },silent = TRUE)
   }
-  if(is.null(init_fit)){
-    init_fit =
-      suppressMessages(sic_frequentist(formula,data, min_count_to_estimate = 2 * P))
+  
+  ## Fit incidence models
+  fits$incidence = list()
+  for(p in valid_responses$incidence){
+    formula_p = NULL
+    
+    try({
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(c(X_vars$incidence,
+                  paste(pathogen_vars[valid_covariates$incidence[[p]]],
+                        "_lagged",
+                        sep = "")),
+                collapse = " + ")
+        ))
+    },silent = TRUE)
+    
+    if(is.null(formula_p)){
+      formula_p = 
+        as.formula(paste0(
+          pathogen_vars[p],
+          " ~ ",
+          paste(X_vars$incidence,
+                collapse = " + ")
+        ))
+    }
+    
+    try({ 
+      fits$incidence[[p]] =
+        glm(formula_p,
+            data = data_aug[incidence_index[[p]],],
+            family = binomial("cloglog"))
+    },silent = TRUE)
   }
-  options(warn = warn); rm(warn)
-
-  init_values =
-    list(Beta_I = matrix(0.0,Q,P),
-         Beta_C = matrix(0.0,Q,P),
-         U = matrix(0.0,P,lrank),
-         V_I = matrix(0.0,P,lrank),
-         V_C = matrix(0.0,P,lrank))
-
-  temp = tibble(Covariate = c("(Intercept)",X_vars))
-  for(j in 1:P){
-    temp =
-      temp %>%
-      left_join(init_fit$results %>%
-                  filter(Response == pathogen_vars[j],
-                         Model == "Incidence") %>%
-                  select(Covariate,Estimate),
-                by = "Covariate")
+  
+  ## Fit prevalence models
+  fits$prevalence = list()
+  for(p in valid_responses$prevalence){
+    formula_p = 
+      as.formula(paste0(
+        pathogen_vars[p],
+        " ~ ",
+        paste(X_vars$prevalence,
+              collapse = " + ")
+      ))
+    try({ 
+      fits$prevalence[[p]] =
+        glm(formula_p,
+            data = data_0,
+            family = binomial())
+    },silent = TRUE)
   }
-  init_values$Beta_I = matrix(unlist(temp[,-1]),Q,P,
-                              dimnames = list(Covariate = c("Intercept",X_vars),
-                                              Response = pathogen_vars))
-  temp = tibble(Covariate = c("(Intercept)",X_vars))
-  for(j in 1:P){
-    temp =
-      temp %>%
-      left_join(init_fit$results %>%
-                  filter(Response == pathogen_vars[j],
-                         Model == "Clearance") %>%
-                  select(Covariate,Estimate),
-                by = "Covariate")
+  
+  ## Fill in values from glm's
+  beta_C = array(0.0, 
+                 c(Q$clearance,P,n_draws),
+                 dimnames = list(c("(Intercept)",X_vars$clearance),
+                                 pathogen_vars,
+                                 NULL))
+  beta_I = array(0.0, 
+                 c(Q$incidence,P,n_draws),
+                 dimnames = list(c("(Intercept)",X_vars$incidence),
+                                 pathogen_vars,
+                                 NULL))
+  beta_pr = array(0.0, 
+                  c(Q$prevalence,P,n_draws),
+                  dimnames = list(c("(Intercept)",X_vars$prevalence),
+                                  pathogen_vars,
+                                  NULL))
+  eta_I = eta_C = array(0.0, 
+                        c(P,P,n_draws),
+                        dimnames = list(paste(pathogen_vars,"lagged",sep="_"),
+                                        pathogen_vars,
+                                        NULL))
+  for(p in 1:P){
+    try({
+      if(p %in% valid_responses$clearance){
+        beta_C[names(coef(fits$clearance[[p]]))[1:Q$clearance],p,1] = 
+          coef(fits$clearance[[p]])[1:Q$clearance]
+        try({
+          eta_C[names(coef(fits$clearance[[p]]))[-c(1:Q$clearance)],p,1] = 
+            coef(fits$clearance[[p]])[-c(1:Q$clearance)]
+        },silent=TRUE)
+      }
+    },silent=TRUE)
+    
+    try({
+      if(p %in% valid_responses$incidence){
+        beta_C[names(coef(fits$incidence[[p]]))[1:Q$incidence],p,1] = 
+          coef(fits$incidence[[p]])[1:Q$incidence]
+        try({
+          eta_C[names(coef(fits$incidence[[p]]))[-c(1:Q$incidence)],p,1] = 
+            coef(fits$incidence[[p]])[-c(1:Q$incidence)]
+        },silent=TRUE)
+      }
+    },silent=TRUE)
+    
+    try({
+      if(p %in% valid_responses$prevalence){
+        beta_pr[,p,1] = 
+          coef(fits$prevalence[[p]])
+      }
+    },silent=TRUE)
   }
-  init_values$Beta_C = matrix(unlist(temp[,-1]),Q,P,
-                              dimnames = list(Covariate = c("Intercept",X_vars),
-                                              Response = pathogen_vars))
-
-  temp = tibble(Covariate = paste(pathogen_vars,"lagged",sep="_"))
-  for(j in 1:P){
-    temp =
-      temp %>%
-      left_join(init_fit$results %>%
-                  filter(Response == pathogen_vars[j],
-                         Model == "Incidence") %>%
-                  select(Covariate,Estimate),
-                by = "Covariate")
-  }
-  eta_I =
-    matrix(unlist(temp[,-1]),P,P,
-           dimnames = list(Covariate = pathogen_vars,
-                           Response = pathogen_vars))
-  eta_I[which(is.na(eta_I))] = 0.0
-  temp = tibble(Covariate = paste(pathogen_vars,"lagged",sep="_"))
-  for(j in 1:P){
-    temp =
-      temp %>%
-      left_join(init_fit$results %>%
-                  filter(Response == pathogen_vars[j],
-                         Model == "Clearance") %>%
-                  select(Covariate,Estimate),
-                by = "Covariate")
-  }
-  eta_C =
-    matrix(unlist(temp[,-1]),P,P,
-           dimnames = list(Covariate = pathogen_vars,
-                           Response = pathogen_vars))
-  eta_C[which(is.na(eta_C))] = 0.0
-  eta_svd = svd(cbind(eta_I,eta_C))
-  init_values$U =
-    eta_svd$u[,1:lrank] %*% diag(sqrt(eta_svd$d[1:lrank]))
-  init_values$V_I =
-    eta_svd$v[1:P,1:lrank] %*% diag(sqrt(eta_svd$d[1:lrank]))
-  init_values$V_C =
-    eta_svd$v[P + 1:P,1:lrank] %*% diag(sqrt(eta_svd$d[1:lrank]))
-  rm(temp,eta_I,eta_C,eta_svd,form_char)
-
-
+  
+  
+  ## Finally, do sensitivity and specificity
+  Se = Sp = numeric(n_draws)
+  
+  Se[1] = prior_sensitivity$a / sum(unlist(prior_sensitivity))
+  Sp[1] = prior_specificity$a / sum(unlist(prior_specificity))
+  
+  
+  
+  
+  
 }
