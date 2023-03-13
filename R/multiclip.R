@@ -41,7 +41,7 @@ if(FALSE){
   library(plot.matrix)
   library(viridis)
   import::from(ggplot2,ggtitle)
-  # library(adaptMCMC)
+  # library(mvtnorm)
   source("~/SIC/R/sic_simulator.R")
   source("~/SIC/R/sic_frequentist.R")
   # source("~/SIC/R/sic.R")
@@ -72,6 +72,7 @@ if(FALSE){
   prior_sensitivity = list(a = 18.5, b = 3.9)
   prior_specificity = list(a = 50, b = 1)
   n_draws = 5e4
+  MH_scalars = list(clearance = 1, incidence = 1, prevalence = 1)
 
   
   temp_fun = function(x){
@@ -99,6 +100,7 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                      prior_prev = list(location = 0, scale = sqrt(2.5), autoscale = TRUE),
                      prior_sensitivity = list(a = 18.5, b = 3.9), # Puts 95% prior probability between 0.65 and 0.95
                      prior_specificity = list(a = 50, b = 1), # Puts 95% prior probability between 0.929 and 0.999
+                     MH_scalars = list(clearance = 1, incidence = 1, prevalence = 1),
                      verbose = TRUE){
 
   if(!is.null(seed)){
@@ -107,6 +109,9 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     warning("Make sure to set your seed!")
   }
 
+
+  # Curating data -----------------------------------------------------------
+  
   if(verbose) cat("\nCurating data and determining which responses/covariates are estimable\n")
   # Drop NAs
   data_aug =
@@ -210,6 +215,8 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     data_aug[[paste0(pathogen_vars[p],"_est")]] =
       data_aug[[pathogen_vars[p]]]
   }
+  
+  # data_aug_old = data_aug
 
   # Filter data by time = 0 or time >= 1
   data_gr0 =
@@ -219,8 +226,10 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     data_aug %>%
     filter(time0)
 
+  
 
-  # Determine what is estimable
+  # Determine estimability --------------------------------------------------
+  
   incidence_index =
     clearance_index =
     list()
@@ -316,8 +325,23 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
   valid_responses$prevalence = 
     which(tables$prevalence >= min_count_to_estimate)
   
-
-
+  MH = list()
+  MH$beta_eta_C = 
+    lapply(fits$clearance,
+           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
+  MH$beta_eta_I = 
+    lapply(fits$incidence,
+           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
+  MH$beta_pr = 
+    lapply(fits$prevalence,
+           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
+  
+  
+  # Get more basic quantities -----------------------------------------------
+  
+  # Get tau as replicated columns in a matrix
+  tau_matrix = matrix(data_gr0$tau,nrow(data_gr0),P)
+  
   # Get design matrices
   X = list()
   X$clearance =
@@ -344,32 +368,34 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     as.matrix()
 
   # Get lagged
-  get_lagged_z = function(){
+  get_lagged_z = function(dataset,z_i0p,z_itp){
 
-    data_aug[data_aug$time0,grep("_est",colnames(data_aug))] =
+    dataset[dataset$time0,grep("_est",colnames(dataset))] =
       z_i0p
-    data_aug[!data_aug$time0,grep("_est",colnames(data_aug))] =
+    dataset[!dataset$time0,grep("_est",colnames(dataset))] =
       z_itp
 
     for(p in 1:P){
-      data_aug[[paste0(pathogen_vars[p],"_lagged")]] =
-        ifelse(!data_aug$time0,
-               c(-999,data_aug[[paste0(pathogen_vars[p],"_est")]][-NT]),
+      dataset[[paste0(pathogen_vars[p],"_lagged")]] =
+        ifelse(!dataset$time0,
+               c(-999,dataset[[paste0(pathogen_vars[p],"_est")]][-NT]),
                NA)
     }
 
-    data_aug %>%
+    dataset %>%
       na.omit() %>%
       select(all_of(paste(pathogen_vars,"lagged",sep="_"))) %>%
       as.matrix()
   }
-  z_lagged = get_lagged_z()
+  z_lagged = get_lagged_z(data_aug)
 
   # Reverse coding
-  z_star = abs(z_itp - z_lagged)
+  # z_star = abs(z_itp - z_lagged)
   
   
-  # Initialize
+
+  # Initialize --------------------------------------------------------------
+
   if(verbose) cat("\nInitializing parameters\n")
   fits = list()
   
@@ -530,7 +556,63 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
   Sp[1] = prior_specificity$a / sum(unlist(prior_specificity))
   
   
+
+  # Create functions for MH-within-Gibbs sampler ----------------------------
+  
+  get_tau_lambda = function(z_lagged,beta_I,beta_C,eta_I,eta_C){
+    log_lambda = 
+      (1 - z_lagged) * (X$incidence %*% beta_I + z_lagged %*% eta_I) +
+      (z_lagged) * (X$clearance %*% beta_C + z_lagged %*% eta_C)
+    
+    tau_matrix * exp(log_lambda)
+  }
+  
+  logpost_prevalence = function(z_i0p,beta_pr,Se,Sp){
+    rho = 1 / (1 + exp(-X$prevalence %*% beta_pr[,,1]))
+    
+    sum(z_i0p * log(rho)) +
+      sum((1 - z_i0p) * log(1-rho)) +
+      sum(z_i0p * y_i0p) * log(Se) +
+      sum(z_i0p * (1 - y_i0p)) * log(1 - Se) +
+      sum((1 - z_i0p) * (1 - y_i0p)) * log(Sp) +
+      sum((1 - z_i0p) * y_i0p) * log(1 - Sp) 
+  }
+  
+  logpost_clear_incid = function(tau_lambda,z_itp,z_lagged,Se,Sp){
+    z_star = abs(z_itp - z_lagged)
+    e_neg_tau_lambda = exp(-tau_lambda)
+    
+    sum(z_itp * y_itp) * log(Se) +
+      sum(z_itp * (1 - y_itp)) * log(1 - Se) +
+      sum((1 - z_itp) * (1 - y_itp)) * log(Sp) +
+      sum((1 - z_itp) * y_itp) * log(1 - Sp) +
+      sum(z_itp * log(1 - e_neg_tau_lambda)) +
+      sum((1 - z_itp) * log(e_neg_tau_lambda))
+  }
+  
+  
+  draw_beta_pr = expression({
+    new_beta_pr = 
+      beta_pr[,,iter]
+    for(p in valid_responses$prevalence){
+      new_beta_pr[,p] = 
+        new_beta_pr[,p] +
+        rnorm(Q$prevalence) %*% MH$prevalence[[p]] * MH_scalars$prevalence
+    }
+    
+  })
   
   
   
-}
+  # Get MH covariances ------------------------------------------------------
+
+  for(p in valid_responses$prevalence){
+    
+  }
+  
+  
+  
+  
+  
+
+  }
