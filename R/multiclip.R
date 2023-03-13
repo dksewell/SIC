@@ -43,7 +43,7 @@ if(FALSE){
   import::from(ggplot2,ggtitle)
   # library(mvtnorm)
   source("~/SIC/R/sic_simulator.R")
-  source("~/SIC/R/sic_frequentist.R")
+  # source("~/SIC/R/sic_frequentist.R")
   # source("~/SIC/R/sic.R")
   # source("~/SIC/R/plot.sic.R")
 
@@ -66,15 +66,15 @@ if(FALSE){
   verbose = TRUE
   prior_beta_I = list(location = 0, scale = 2.5, autoscale = TRUE)
   prior_beta_C = list(location = 0, scale = 2.5, autoscale = TRUE)
-  prior_eta_I = list(location = 0, scale = sqrt(2.5))
-  prior_eta_C = list(location = 0, scale = sqrt(2.5))
-  prior_prev = list(location = 0, scale = sqrt(2.5), autoscale = TRUE)
+  prior_eta_I = list(location = 0, scale = 2.5, autoscale = FALSE)
+  prior_eta_C = list(location = 0, scale = 2.5, autoscale = FALSE)
+  prior_prev = list(location = 0, scale = 2.5, autoscale = TRUE)
   prior_sensitivity = list(a = 18.5, b = 3.9)
   prior_specificity = list(a = 50, b = 1)
   n_draws = 5e4
-  MH_scalars = list(clearance = 1, incidence = 1, prevalence = 1)
+  MH_scalars = list(clearance = 1/5, incidence = 1/5, prevalence = 1/5, z_itp = 0.5)
 
-  
+
   temp_fun = function(x){
     (qbeta(0.025,x[1], x[2]) - 0.65)^2 +
        (qbeta(0.975,x[1], x[2]) - 0.95)^2
@@ -83,6 +83,7 @@ if(FALSE){
   curve(dbeta(x,18.5, 3.9))
   qbeta(c(0.025,0.975),18.5, 3.9)
   qbeta(c(0.025,0.975),50, 1)
+  rm(temp_fun)
 }
 
 multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) ~ x1 + x2 + (time | subject),
@@ -95,12 +96,12 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                      n_draws = 5e4,
                      prior_beta_I = list(location = 0, scale = 2.5, autoscale = TRUE),
                      prior_beta_C = list(location = 0, scale = 2.5, autoscale = TRUE),
-                     prior_eta_I = list(location = 0, scale = sqrt(2.5)),
-                     prior_eta_C = list(location = 0, scale = sqrt(2.5)),
-                     prior_prev = list(location = 0, scale = sqrt(2.5), autoscale = TRUE),
+                     prior_eta_I = list(location = 0, scale = 2.5, autoscale = FALSE),
+                     prior_eta_C = list(location = 0, scale = 2.5, autoscale = FALSE),
+                     prior_prev = list(location = 0, scale = 2.5, autoscale = TRUE),
                      prior_sensitivity = list(a = 18.5, b = 3.9), # Puts 95% prior probability between 0.65 and 0.95
                      prior_specificity = list(a = 50, b = 1), # Puts 95% prior probability between 0.929 and 0.999
-                     MH_scalars = list(clearance = 1, incidence = 1, prevalence = 1),
+                     MH_scalars = list(clearance = 1/5, incidence = 1/5, prevalence = 1/5, z_itp = 0.5),
                      verbose = TRUE){
 
   if(!is.null(seed)){
@@ -111,7 +112,7 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
 
 
   # Curating data -----------------------------------------------------------
-  
+
   if(verbose) cat("\nCurating data and determining which responses/covariates are estimable\n")
   # Drop NAs
   data_aug =
@@ -215,7 +216,7 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     data_aug[[paste0(pathogen_vars[p],"_est")]] =
       data_aug[[pathogen_vars[p]]]
   }
-  
+
   # data_aug_old = data_aug
 
   # Filter data by time = 0 or time >= 1
@@ -226,10 +227,10 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
     data_aug %>%
     filter(time0)
 
-  
+
 
   # Determine estimability --------------------------------------------------
-  
+
   incidence_index =
     clearance_index =
     list()
@@ -315,33 +316,26 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
 
     }
   }
-  
+
   tables$prevalence =
-    data_0 %>% 
-    dplyr::select(all_of(pathogen_vars)) %>% 
-    as.matrix() %>% 
+    data_0 %>%
+    dplyr::select(all_of(pathogen_vars)) %>%
+    as.matrix() %>%
     colSums()
-  
-  valid_responses$prevalence = 
+
+  valid_responses$prevalence =
     which(tables$prevalence >= min_count_to_estimate)
-  
-  MH = list()
-  MH$beta_eta_C = 
-    lapply(fits$clearance,
-           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
-  MH$beta_eta_I = 
-    lapply(fits$incidence,
-           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
-  MH$beta_pr = 
-    lapply(fits$prevalence,
-           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
-  
-  
+
+  valid_responses$combined =
+    intersect(valid_responses$incidence,
+              valid_responses$clearance)
+
+
   # Get more basic quantities -----------------------------------------------
-  
+
   # Get tau as replicated columns in a matrix
   tau_matrix = matrix(data_gr0$tau,nrow(data_gr0),P)
-  
+
   # Get design matrices
   X = list()
   X$clearance =
@@ -387,31 +381,27 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
       select(all_of(paste(pathogen_vars,"lagged",sep="_"))) %>%
       as.matrix()
   }
-  z_lagged = get_lagged_z(data_aug)
+  z_lagged = get_lagged_z(data_aug,z_i0p,z_itp)
 
-  # Reverse coding
-  # z_star = abs(z_itp - z_lagged)
-  
-  
 
   # Initialize --------------------------------------------------------------
 
   if(verbose) cat("\nInitializing parameters\n")
   fits = list()
-  
+
   ## Clearance
   fits$clearance = list()
-  data_aug_reverse_coded = 
+  data_aug_reverse_coded =
     data_aug
   for(p in 1:P){
-    data_aug_reverse_coded[[pathogen_vars[p]]][clearance_index[[p]]] = 
+    data_aug_reverse_coded[[pathogen_vars[p]]][clearance_index[[p]]] =
       1 - data_aug_reverse_coded[[pathogen_vars[p]]][clearance_index[[p]]]
   }
-  for(p in valid_responses$clearance){
+  for(p in valid_responses$combined){
     formula_p = NULL
-    
+
     try({
-      formula_p = 
+      formula_p =
         as.formula(paste0(
           pathogen_vars[p],
           " ~ ",
@@ -422,9 +412,9 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                 collapse = " + ")
         ))
     },silent = TRUE)
-    
+
     if(is.null(formula_p)){
-      formula_p = 
+      formula_p =
         as.formula(paste0(
           pathogen_vars[p],
           " ~ ",
@@ -432,23 +422,23 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                 collapse = " + ")
         ))
     }
-    
-    try({ 
+
+    try({
       fits$clearance[[p]] =
         glm(formula_p,
-            data = 
+            data =
               data_aug_reverse_coded[clearance_index[[p]],],
             family = binomial("cloglog"))
     },silent = TRUE)
   }
-  
+
   ## Fit incidence models
   fits$incidence = list()
-  for(p in valid_responses$incidence){
+  for(p in valid_responses$combined){
     formula_p = NULL
-    
+
     try({
-      formula_p = 
+      formula_p =
         as.formula(paste0(
           pathogen_vars[p],
           " ~ ",
@@ -459,9 +449,9 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                 collapse = " + ")
         ))
     },silent = TRUE)
-    
+
     if(is.null(formula_p)){
-      formula_p = 
+      formula_p =
         as.formula(paste0(
           pathogen_vars[p],
           " ~ ",
@@ -469,150 +459,515 @@ multiclip = function(formula_clearance =  cbind(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10) 
                 collapse = " + ")
         ))
     }
-    
-    try({ 
+
+    try({
       fits$incidence[[p]] =
         glm(formula_p,
             data = data_aug[incidence_index[[p]],],
             family = binomial("cloglog"))
     },silent = TRUE)
   }
-  
+
   ## Fit prevalence models
   fits$prevalence = list()
   for(p in valid_responses$prevalence){
-    formula_p = 
+    formula_p =
       as.formula(paste0(
         pathogen_vars[p],
         " ~ ",
         paste(X_vars$prevalence,
               collapse = " + ")
       ))
-    try({ 
+    try({
       fits$prevalence[[p]] =
         glm(formula_p,
             data = data_0,
             family = binomial())
     },silent = TRUE)
   }
-  
+
   ## Fill in values from glm's
-  beta_C = array(0.0, 
+  beta_C = array(0.0,
                  c(Q$clearance,P,n_draws),
                  dimnames = list(c("(Intercept)",X_vars$clearance),
                                  pathogen_vars,
                                  NULL))
-  beta_I = array(0.0, 
+  beta_I = array(0.0,
                  c(Q$incidence,P,n_draws),
                  dimnames = list(c("(Intercept)",X_vars$incidence),
                                  pathogen_vars,
                                  NULL))
-  beta_pr = array(0.0, 
+  beta_pr = array(0.0,
                   c(Q$prevalence,P,n_draws),
                   dimnames = list(c("(Intercept)",X_vars$prevalence),
                                   pathogen_vars,
                                   NULL))
-  eta_I = eta_C = array(0.0, 
+  eta_I = eta_C = array(0.0,
                         c(P,P,n_draws),
                         dimnames = list(paste(pathogen_vars,"lagged",sep="_"),
                                         pathogen_vars,
                                         NULL))
   for(p in 1:P){
     try({
-      if(p %in% valid_responses$clearance){
-        beta_C[names(coef(fits$clearance[[p]]))[1:Q$clearance],p,1] = 
+      if(p %in% valid_responses$combined){
+        beta_C[names(coef(fits$clearance[[p]]))[1:Q$clearance],p,1] =
           coef(fits$clearance[[p]])[1:Q$clearance]
         try({
-          eta_C[names(coef(fits$clearance[[p]]))[-c(1:Q$clearance)],p,1] = 
+          eta_C[names(coef(fits$clearance[[p]]))[-c(1:Q$clearance)],p,1] =
             coef(fits$clearance[[p]])[-c(1:Q$clearance)]
         },silent=TRUE)
       }
     },silent=TRUE)
-    
+
     try({
-      if(p %in% valid_responses$incidence){
-        beta_C[names(coef(fits$incidence[[p]]))[1:Q$incidence],p,1] = 
+      if(p %in% valid_responses$combined){
+        beta_I[names(coef(fits$incidence[[p]]))[1:Q$incidence],p,1] =
           coef(fits$incidence[[p]])[1:Q$incidence]
         try({
-          eta_C[names(coef(fits$incidence[[p]]))[-c(1:Q$incidence)],p,1] = 
+          eta_I[names(coef(fits$incidence[[p]]))[-c(1:Q$incidence)],p,1] =
             coef(fits$incidence[[p]])[-c(1:Q$incidence)]
         },silent=TRUE)
       }
     },silent=TRUE)
-    
+
     try({
       if(p %in% valid_responses$prevalence){
-        beta_pr[,p,1] = 
+        beta_pr[,p,1] =
           coef(fits$prevalence[[p]])
       }
     },silent=TRUE)
   }
-  
-  
+
+
   ## Finally, do sensitivity and specificity
   Se = Sp = numeric(n_draws)
-  
+
   Se[1] = prior_sensitivity$a / sum(unlist(prior_sensitivity))
   Sp[1] = prior_specificity$a / sum(unlist(prior_specificity))
-  
-  
+
+
+
+  # Set prior hyperparameter values -----------------------------------------
+
+  sd_x = lapply(X,function(x) apply(as.matrix(x[,-1]),2,sd))
+  names(sd_x) = names(X)
+  sd_zlagged = apply(z_lagged,2,sd)
+  prior_list = list(beta_I = list(mean = prior_beta_I$location,
+                                  sd =
+                                    prior_beta_I$scale *
+                                    c(1,sd_x$incidence)^prior_beta_I$autoscale),
+                    beta_C = list(mean = prior_beta_C$location,
+                                  sd =
+                                    prior_beta_C$scale *
+                                    c(1,sd_x$clearance)^prior_beta_C$autoscale),
+                    beta_pr = list(mean = prior_prev$location,
+                                   sd =
+                                     prior_prev$scale *
+                                     c(1,sd_x$prevalence)^prior_prev$autoscale),
+                    eta_C = list(mean = prior_eta_C$location,
+                                 sd =
+                                   prior_eta_C$scale *
+                                   sd_zlagged^prior_eta_C$autoscale),
+                    eta_I = list(mean = prior_eta_I$location,
+                                 sd =
+                                   prior_eta_I$scale *
+                                   sd_zlagged^prior_eta_I$autoscale))
+  rm(sd_x,sd_zlagged)
+
 
   # Create functions for MH-within-Gibbs sampler ----------------------------
-  
+
   get_tau_lambda = function(z_lagged,beta_I,beta_C,eta_I,eta_C){
-    log_lambda = 
+    log_lambda =
       (1 - z_lagged) * (X$incidence %*% beta_I + z_lagged %*% eta_I) +
       (z_lagged) * (X$clearance %*% beta_C + z_lagged %*% eta_C)
-    
+
     tau_matrix * exp(log_lambda)
   }
-  
-  logpost_prevalence = function(z_i0p,beta_pr,Se,Sp){
-    rho = 1 / (1 + exp(-X$prevalence %*% beta_pr[,,1]))
-    
-    sum(z_i0p * log(rho)) +
-      sum((1 - z_i0p) * log(1-rho)) +
-      sum(z_i0p * y_i0p) * log(Se) +
-      sum(z_i0p * (1 - y_i0p)) * log(1 - Se) +
-      sum((1 - z_i0p) * (1 - y_i0p)) * log(Sp) +
-      sum((1 - z_i0p) * y_i0p) * log(1 - Sp) 
+  tau_lambda = get_tau_lambda(z_lagged = z_lagged,
+                              beta_I = beta_I[,,1],
+                              beta_C = beta_C[,,1],
+                              eta_I = eta_I[,,1],
+                              eta_C = eta_C[,,1])
+
+
+  logpost_prevalence = function(z_i0p,rho,Se,Sp){
+
+    sum(z_i0p[,valid_responses$prevalence] *
+          log(rho[,valid_responses$prevalence])) +
+      sum((1 - z_i0p[,valid_responses$prevalence]) *
+            log(1-rho[,valid_responses$prevalence])) +
+      sum(z_i0p[,valid_responses$prevalence] *
+            y_i0p[,valid_responses$prevalence]) * log(Se) +
+      sum(z_i0p[,valid_responses$prevalence] *
+            (1 - y_i0p[,valid_responses$prevalence])) * log(1 - Se) +
+      sum((1 - z_i0p[,valid_responses$prevalence]) *
+            (1 - y_i0p[,valid_responses$prevalence])) * log(Sp) +
+      sum((1 - z_i0p[,valid_responses$prevalence]) *
+            y_i0p[,valid_responses$prevalence]) * log(1 - Sp)
   }
-  
+
   logpost_clear_incid = function(tau_lambda,z_itp,z_lagged,Se,Sp){
     z_star = abs(z_itp - z_lagged)
-    e_neg_tau_lambda = exp(-tau_lambda)
-    
-    sum(z_itp * y_itp) * log(Se) +
-      sum(z_itp * (1 - y_itp)) * log(1 - Se) +
-      sum((1 - z_itp) * (1 - y_itp)) * log(Sp) +
-      sum((1 - z_itp) * y_itp) * log(1 - Sp) +
-      sum(z_itp * log(1 - e_neg_tau_lambda)) +
-      sum((1 - z_itp) * log(e_neg_tau_lambda))
+
+    sum(z_itp[,valid_responses$combined] *
+          y_itp[,valid_responses$combined]) * log(Se) +
+      sum(z_itp[,valid_responses$combined] *
+            (1 - y_itp[,valid_responses$combined])) * log(1 - Se) +
+      sum((1 - z_itp[,valid_responses$combined]) *
+            (1 - y_itp[,valid_responses$combined])) * log(Sp) +
+      sum((1 - z_itp[,valid_responses$combined]) *
+            y_itp[,valid_responses$combined]) * log(1 - Sp) +
+      sum(z_star[,valid_responses$combined] *
+            log(1 - exp(-tau_lambda[,valid_responses$combined]))) -
+      sum((1 - z_star[,valid_responses$combined]) *
+            tau_lambda[,valid_responses$combined])
   }
-  
-  
+
+
+
+  prior_logpdf = function(beta_I,beta_C,beta_pr,eta_C,eta_I){
+    sum(dnorm(c(beta_I),
+              mean = c(prior_list$beta_I$mean),
+              sd = c(prior_list$beta_I$sd),
+              log = TRUE)) +
+      sum(dnorm(c(beta_C),
+                mean = c(prior_list$beta_C$mean),
+                sd = c(prior_list$beta_C$sd),
+                log = TRUE)) +
+      sum(dnorm(c(beta_pr),
+                mean = c(prior_list$beta_pr$mean),
+                sd = c(prior_list$beta_pr$sd),
+                log = TRUE)) +
+      sum(dnorm(c(eta_C),
+                mean = c(prior_list$eta_C$mean),
+                sd = c(prior_list$eta_C$sd),
+                log = TRUE)) +
+      sum(dnorm(c(eta_I),
+                mean = c(prior_list$eta_I$mean),
+                sd = c(prior_list$eta_I$sd),
+                log = TRUE))
+  }
+
+
   draw_beta_pr = expression({
-    new_beta_pr = 
+    new_beta_pr =
       beta_pr[,,iter]
     for(p in valid_responses$prevalence){
-      new_beta_pr[,p] = 
+      new_beta_pr[,p] =
         new_beta_pr[,p] +
-        rnorm(Q$prevalence) %*% MH$prevalence[[p]] * MH_scalars$prevalence
+        rnorm(Q$prevalence) %*% MH$beta_pr[[p]] * MH_scalars$prevalence
     }
-    
+
+    rho_new = rho
+
+    for(p in valid_responses$prevalence){
+      rho_new[,p] =
+        1 / (1 + exp(-X$prevalence %*% beta_pr[,p,1]))
+
+      acc_probability =
+        logpost_prevalence(z_i0p,rho_new,Se[iter],Sp[iter]) -
+        logpost_prevalence(z_i0p,rho,Se[iter],Sp[iter]) +
+        prior_logpdf(beta_I[,,iter],beta_C[,,iter],new_beta_pr,eta_C[,,iter],eta_I[,,iter]) -
+        prior_logpdf(beta_I[,,iter],beta_C[,,iter],beta_pr[,,iter],eta_C[,,iter],eta_I[,,iter])
+
+      if(runif(1) < exp(acc_probability)){
+        acc_rates$prevalence[p] =
+          acc_rates$prevalence[p] + 1L
+
+        rho[,p] = rho_new[,p]
+        beta_pr[,p,iter] =
+          new_beta_pr[,p]
+      }else{
+        rho_new[,p] = rho[,p]
+      }
+
+    }
   })
-  
-  
-  
-  # Get MH covariances ------------------------------------------------------
 
-  for(p in valid_responses$prevalence){
-    
-  }
-  
-  
-  
-  
-  
 
+  draw_beta_eta_I = expression({
+    tau_lambda = get_tau_lambda(z_lagged = z_lagged,
+                                beta_I = beta_I[,,iter],
+                                beta_C = beta_C[,,iter],
+                                eta_I = eta_I[,,iter],
+                                eta_C = eta_C[,,iter])
+    new_beta_eta =
+      rbind(beta_I[,,iter],
+            eta_I[,,iter])
+    for(p in valid_responses$combined){
+      new_beta_eta[get_rows(p,"incidence"),p] =
+        new_beta_eta[get_rows(p,"incidence"),p] +
+        rnorm(Q$incidence + length(valid_covariates$incidence[[p]])) %*%
+        MH$beta_eta_I[[p]] * MH_scalars$incidence
+
+      new_tau_lambda = get_tau_lambda(z_lagged = z_lagged,
+                                      beta_I = new_beta_eta[1:Q$incidence,],
+                                      beta_C = beta_C[,,iter],
+                                      eta_I = new_beta_eta[-c(1:Q$incidence),],
+                                      eta_C = eta_C[,,iter])
+
+      acc_probability =
+        logpost_clear_incid(new_tau_lambda,z_itp,z_lagged,Se[iter],Sp[iter]) -
+        logpost_clear_incid(tau_lambda,z_itp,z_lagged,Se[iter],Sp[iter]) +
+        prior_logpdf(new_beta_eta[1:Q$incidence,],beta_C[,,iter],beta_pr[,,iter],eta_C[,,iter],new_beta_eta[-c(1:Q$incidence),]) -
+        prior_logpdf(beta_I[,,iter],beta_C[,,iter],beta_pr[,,iter],eta_C[,,iter],eta_I[,,iter])
+
+
+      if(runif(1) < exp(acc_probability)){
+        acc_rates$incidence[p] =
+          acc_rates$incidence[p] + 1L
+
+        tau_lambda = new_tau_lambda
+        beta_I[,p,iter] =
+          new_beta_eta[1:Q$incidence,p]
+        eta_I[,p,iter] =
+          new_beta_eta[-c(1:Q$incidence),p]
+      }else{
+        new_beta_eta[,p] =
+          c(beta_I[,p,iter],
+            eta_I[,p,iter])
+      }
+    }
+  })
+
+
+  draw_beta_eta_C = expression({
+    tau_lambda = get_tau_lambda(z_lagged = z_lagged,
+                                beta_I = beta_I[,,iter],
+                                beta_C = beta_C[,,iter],
+                                eta_I = eta_I[,,iter],
+                                eta_C = eta_C[,,iter])
+    new_beta_eta =
+      rbind(beta_C[,,iter],
+            eta_C[,,iter])
+    for(p in valid_responses$combined){
+      new_beta_eta[get_rows(p,"clearance"),p] =
+        new_beta_eta[get_rows(p,"clearance"),p] +
+        rnorm(Q$clearance + length(valid_covariates$c[[p]])) %*%
+        MH$beta_eta_C[[p]] * MH_scalars$clearance
+
+      new_tau_lambda = get_tau_lambda(z_lagged = z_lagged,
+                                      beta_I = beta_I[,,iter],
+                                      beta_C = new_beta_eta[1:Q$clearance,],
+                                      eta_I = eta_I[,,iter],
+                                      eta_C = new_beta_eta[-c(1:Q$clearance),])
+
+      acc_probability =
+        logpost_clear_incid(new_tau_lambda,z_itp,z_lagged,Se[iter],Sp[iter]) -
+        logpost_clear_incid(tau_lambda,z_itp,z_lagged,Se[iter],Sp[iter]) +
+        prior_logpdf(beta_I[,,iter],new_beta_eta[1:Q$clearance,],beta_pr[,,iter],new_beta_eta[-c(1:Q$clearance),],eta_I[,,iter]) -
+        prior_logpdf(beta_I[,,iter],beta_C[,,iter],beta_pr[,,iter],eta_C[,,iter],eta_I[,,iter])
+
+
+      if(runif(1) < exp(acc_probability)){
+        acc_rates$c[p] =
+          acc_rates$clearance[p] + 1L
+
+        tau_lambda = new_tau_lambda
+        beta_C[,p,iter] =
+          new_beta_eta[1:Q$clearance,p]
+        eta_C[,p,iter] =
+          new_beta_eta[-c(1:Q$clearance),p]
+      }else{
+        new_beta_eta[,p] =
+          c(beta_C[,p,iter],
+            eta_C[,p,iter])
+      }
+    }
+  })
+
+
+  draw_z0 = expression({
+    prob_matrix =
+      rho * (Se[iter]^y_i0p * (1 - Se[iter])^(1 - y_i0p))
+    prob_matrix =
+      prob_matrix /
+      (prob_matrix +
+         (1 - rho) * (Sp[iter]^(1 - y_i0p) * (1 - Sp[iter])^y_i0p))
+    for(p in valid_responses$prevalence){
+      z_i0p[,p] =
+        rbinom(nrow(z_i0p),1,prob_matrix[,p])
+    }
+
+    z_i0_estimate =
+      z_i0_estimate + z_i0p
+  })
+
+  draw_zt = expression({
+    e_neg_tau_lambda = exp(-tau_lambda)
+    prob_matrix_new =
+      MH_scalars$z_itp * Se[iter]^y_itp * (1 - Se[iter])^(1 - y_itp) *
+      (1 - e_neg_tau_lambda)^(1 - z_lagged) * e_neg_tau_lambda^z_lagged
+    prob_matrix_new =
+      prob_matrix_new /
+      (prob_matrix_new +
+         Sp[iter]^(1 - y_itp) * (1 - Sp[iter])^y_itp *
+         (1 - e_neg_tau_lambda)^z_lagged * e_neg_tau_lambda^(1 - z_lagged) )
+
+    z_itp_new = z_itp
+    for(p in valid_responses$combined){
+      z_itp_new[,p] =
+        rbinom(nrow(z_itp),1,prob_matrix_new[,p])
+    }
+
+    z_lagged_new =
+      get_lagged_z(data_aug,z_i0p,z_itp_new)
+    tau_lambda_new = get_tau_lambda(z_lagged_new,beta_I[,,iter],beta_C[,,iter],eta_I[,,iter],eta_C[,,iter])
+
+    e_neg_tau_lambda_new = exp(-tau_lambda_new)
+    prob_matrix_new =
+      MH_scalars$z_itp * Se[iter]^y_itp * (1 - Se[iter])^(1 - y_itp) *
+      (1 - e_neg_tau_lambda_new)^(1 - z_lagged_new) * e_neg_tau_lambda_new^z_lagged_new
+    prob_matrix_new =
+      prob_matrix_new /
+      (prob_matrix_new +
+         Sp[iter]^(1 - y_itp) * (1 - Sp[iter])^y_itp *
+         (1 - e_neg_tau_lambda_new)^z_lagged_new * e_neg_tau_lambda_new^(1 - z_lagged_new) )
+
+    acc_probability =
+      logpost_clear_incid(tau_lambda_new,z_itp_new,z_lagged_new,Se[iter],Sp[iter]) -
+      logpost_clear_incid(tau_lambda,z_itp,z_lagged,Se[iter],Sp[iter]) +
+      sum(dbinom(c(z_itp[,valid_responses$combined]),
+                 1,
+                 c(prob_matrix_new[,valid_responses$combined]),
+                 log = TRUE)) -
+      sum(dbinom(c(z_itp_new[,valid_responses$combined]),
+                 1,
+                 c(prob_matrix[,valid_responses$combined]),
+                 log = TRUE))
+
+    if(runif(1) < exp(acc_probability)){
+      acc_rates$Z_t = acc_rates$Z_t + 1L
+      z_itp = z_itp_new
+      z_lagged = z_lagged_new
+      tau_lambda = tau_lambda_new
+    }
+
+    z_it_estimate =
+      z_it_estimate + z_itp
+  })
+
+
+  draw_sens_spec = expression({
+    one_minus_y =
+      list(1 - y_i0p,
+           1 - y_itp)
+    one_minus_z =
+      list(1 - z_i0p,
+           1 - z_itp)
+    a_spec =
+      prior_specificity$a +
+      sum(one_minus_y[[1]] * one_minus_z[[1]]) +
+      sum(one_minus_y[[2]] * one_minus_z[[2]])
+    b_spec =
+      prior_specificity$b +
+      sum(y_i0p * one_minus_z[[1]]) +
+      sum(y_itp * one_minus_z[[2]])
+
+    a_sens =
+      prior_sensitivity$a +
+      sum(y_i0p * z_i0p) +
+      sum(y_itp * z_itp)
+    b_sens =
+      prior_sensitivity$b +
+      sum(one_minus_y[[1]] * z_i0p) +
+      sum(one_minus_y[[2]] * z_itp)
+
+    Sp[iter] = rbeta(1,a_spec,b_spec)
+    Se[iter] = rbeta(1,a_sens,b_sens)
+  })
+
+
+
+  # Create objects for MCMC  ------------------------------------------------
+
+
+  MH = list()
+  MH$beta_eta_C =
+    lapply(fits$clearance,
+           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
+  MH$beta_eta_I =
+    lapply(fits$incidence,
+           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
+  MH$beta_pr =
+    lapply(fits$prevalence,
+           function(x) try({chol(summary(x)$cov.scaled)},silent=T))
+
+  # Check for nonsense proposals from bad initial unregularized fits
+  prior_determinants = proposal_determinants = list()
+  proposal_determinants$beta_eta_C =
+    sapply(MH$beta_eta_C, function(x) try({det(crossprod(x))},silent=T))
+  proposal_determinants$beta_eta_I =
+    sapply(MH$beta_eta_I, function(x) try({det(crossprod(x))},silent=T))
+  proposal_determinants$beta_pr =
+    sapply(MH$beta_pr, function(x) try({det(crossprod(x))},silent=T))
+  prior_determinants$beta_eta_C =
+    sapply(1:P,function(p) try({prod(c(prior_list$beta_C$sd^2,
+                                       prior_list$eta_C$sd[ valid_covariates$clearance[[p]] ]^2))},
+                               silent=T))
+  prior_determinants$beta_eta_I =
+    sapply(1:P,function(p) try({prod(c(prior_list$beta_I$sd^2,
+                                       prior_list$eta_I$sd[ valid_covariates$incidence[[p]] ]^2))},
+                               silent=T))
+  prior_determinants$beta_pr =
+    prod(prior_list$beta_pr$sd^2)
+  # Left off here
+  for(p in valid_responses$combined){
+    if(proposal_determinants$beta_eta_C[[p]] >= prior_determinants$beta_eta_C){
+      MH$beta_eta_C[[p]] =
+        sapply()c(prior_list$beta_C$sd,prior_list$eta_C$sd)
+
+    }
   }
+
+
+
+  acc_rates = list()
+  acc_rates$clearance =
+    acc_rates$incidence =
+    acc_rates$prevalence =
+    integer(P)
+  acc_rates$Z_t =
+    0L
+
+  rho = 1 / (1 + exp(-X$prevalence %*% beta_pr[,,1]))
+
+  get_rows = function(p,type){
+    if(is.null(valid_covariates[[type]][[p]])){
+      c("(Intercept)",X_vars[[type]])
+    }else{
+      c("(Intercept)",X_vars[[type]],
+        paste(pathogen_vars[valid_covariates[[type]][[p]]],"lagged",sep="_"))
+    }
+  }
+
+  z_i0_estimate = matrix(0.0,nrow(z_i0p),P)
+  z_it_estimate = matrix(0.0,nrow(z_itp),P)
+
+
+
+  # Perform MH-within-Gibbs sampler -----------------------------------------
+
+  if(verbose) pb = txtProgressBar(0,n_draws,style=3)
+  for(iter in 2:n_draws){
+    beta_C[,,iter] = beta_C[,,iter - 1]
+    beta_I[,,iter] = beta_I[,,iter - 1]
+    eta_C[,,iter] = eta_C[,,iter - 1]
+    eta_I[,,iter] = eta_I[,,iter - 1]
+    beta_pr[,,iter] = beta_pr[,,iter - 1]
+    Se[iter] = Se[iter - 1]
+    Sp[iter] = Sp[iter - 1]
+
+    eval(draw_beta_pr)
+    eval(draw_beta_eta_I)
+    eval(draw_beta_eta_C)
+    eval(draw_z0)
+    eval(draw_zt)
+    eval(draw_sens_spec)
+
+    setTxtProgressBar(pb,iter)
+  }
+
+
+}
